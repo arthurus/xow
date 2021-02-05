@@ -76,12 +76,6 @@ bool GipDevice::handlePacket(const Bytes &packet)
         return false;
     }
 
-    // Ignore packets from accessories
-    if (frame->deviceId > 0)
-    {
-        return true;
-    }
-
     const Bytes data(packet, sizeof(Frame));
 
     // Data is 32-bit aligned, check for minimum size
@@ -113,6 +107,16 @@ bool GipDevice::handlePacket(const Bytes &packet)
         data.size() >= sizeof(GuideButtonData)
     ) {
         guideButtonPressed(data.toStruct<GuideButtonData>());
+    }
+
+    else if (
+        frame->command == CMD_AUDIO_CONFIG &&
+        frame->length == sizeof(AudioConfigData)
+    ) {
+        audioConfigured(
+            frame->deviceId,
+            packet.toStruct<AudioConfigData>(sizeof(Frame))
+        );
     }
 
     else if (
@@ -152,6 +156,24 @@ bool GipDevice::setPowerMode(uint8_t id, PowerMode mode)
 
     out.append(frame);
     out.append(static_cast<uint8_t>(mode));
+
+    return sendPacket(out);
+}
+
+bool GipDevice::configureAudio(uint8_t id, AudioConfigData config)
+{
+    Frame frame = {};
+
+    frame.command = CMD_AUDIO_CONFIG;
+    frame.deviceId = id;
+    frame.type = TYPE_REQUEST;
+    frame.sequence = getSequence();
+    frame.length = sizeof(config);
+
+    Bytes out;
+
+    out.append(frame);
+    out.append(config);
 
     return sendPacket(out);
 }
@@ -204,6 +226,27 @@ bool GipDevice::requestSerialNumber()
     // The purpose of other values is still to be discovered
     out.append(frame);
     out.append(static_cast<uint8_t>(0x04));
+
+    return sendPacket(out);
+}
+
+bool GipDevice::sendAudioSamples(uint8_t id, const Bytes &samples)
+{
+    // The frame data is somehow related to the sample rate
+    Frame frame = {};
+    const Bytes data = { 0x8c, 0x00 };
+
+    frame.command = CMD_AUDIO_SAMPLES;
+    frame.deviceId = id;
+    frame.type = TYPE_REQUEST;
+    frame.sequence = getSequence(true);
+    frame.length = GIP_AUDIO_OUT_PKT_LEN;
+
+    Bytes out;
+
+    out.append(frame);
+    out.append(data);
+    out.append(samples);
 
     return sendPacket(out);
 }

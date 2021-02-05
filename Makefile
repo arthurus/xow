@@ -7,7 +7,7 @@ RELEASE_FLAGS := -O3
 DEFINES := -DVERSION=\"$(VERSION)\"
 
 CXXFLAGS += $(FLAGS) $($(BUILD)_FLAGS) $(DEFINES)
-LDLIBS += -lpthread -lusb-1.0
+LDLIBS += -lpthread -lusb-1.0 -lpulse -lpulse-simple
 SOURCES := $(wildcard *.cpp) $(wildcard */*.cpp)
 OBJECTS := $(SOURCES:.cpp=.o) firmware.o
 DEPENDENCIES := $(SOURCES:.cpp=.d)

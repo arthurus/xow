@@ -54,6 +54,8 @@ public:
         size_t skipEnd = 0
     ) : data(bytes.data.begin() + skipBegin, bytes.data.end() - skipEnd) {}
 
+    inline Bytes(size_t count) : data(count) {}
+
     inline Iterator begin() const
     {
         return data.begin();

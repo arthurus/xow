@@ -41,6 +41,8 @@
 #define RUMBLE_MAX_POWER 100
 #define RUMBLE_DELAY std::chrono::milliseconds(10)
 
+#define AUDIO_PACKET_DELAY std::chrono::milliseconds(7)
+
 Controller::Controller(
     SendPacket sendPacket
 ) : GipDevice(sendPacket),
@@ -51,7 +53,11 @@ Controller::Controller(
         std::placeholders::_2,
         std::placeholders::_3
     )),
-    stopRumbleThread(false) {}
+    stopRumbleThread(false),
+    audioStream(std::bind(
+        &Controller::streamSamplesRead,
+        this,
+        std::placeholders::_1)) {}
 
 Controller::~Controller()
 {
@@ -87,11 +93,37 @@ void Controller::deviceAnnounced(uint8_t id, const AnnounceData *announce)
         announce->hardwareVersion.revision
     );
 
-    initInput(announce);
+    if (id == DEVICE_ID_CONTROLLER)
+    {
+        Log::info("Device type: controller");
+
+        initInput(announce);
+    }
+    else
+    {
+        // We just assume that every accessory is a headset
+        Log::info("Device type: headset");
+
+        setupAudio(id);
+    }
 }
 
 void Controller::statusReceived(uint8_t id, const StatusData *status)
 {
+    if (id != DEVICE_ID_CONTROLLER)
+    {
+        Log::info("Accessory removed");
+        Log::info("Stopping audio");
+
+        audioStream.stop();
+
+        if (!setPowerMode(id, POWER_SLEEP))
+        {
+            Log::error("Failed to set accessory power mode");
+        }
+        return;
+    }
+
     uint8_t type = status->batteryType;
     uint8_t level = status->batteryLevel;
 
@@ -110,6 +142,26 @@ void Controller::guideButtonPressed(const GuideButtonData *button)
 {
     inputDevice.setKey(BTN_MODE, button->pressed);
     inputDevice.report();
+}
+
+void Controller::audioConfigured(uint8_t id, const AudioConfigData *config)
+{
+    Log::info("Audio enabled");
+
+    if (!setPowerMode(id, POWER_ON))
+    {
+        Log::error("Failed to set audio power mode");
+
+        return;
+    }
+
+    // Don't wait for the second "audio enabled" event
+    audioStream.start(
+        DEVICE_NAME,
+        GIP_AUDIO_OUT_RATE,
+        GIP_AUDIO_OUT_CHANNELS,
+        GIP_AUDIO_OUT_COUNT
+    );
 }
 
 void Controller::serialNumberReceived(const SerialData *serial)
@@ -271,6 +323,24 @@ void Controller::processRumble()
     }
 }
 
+void Controller::setupAudio(uint8_t id)
+{
+    AudioConfigData config = {};
+
+    config.streamCount = 0x02;
+    config.sampleConfigIn = 0x09;
+    config.sampleConfigOut = 0x10;
+
+    if (!configureAudio(id, config))
+    {
+        Log::error("Failed to configure audio");
+
+        return;
+    }
+
+    audioId = id;
+}
+
 void Controller::inputFeedbackReceived(
     uint16_t gain,
     ff_effect effect,
@@ -364,4 +434,11 @@ void Controller::inputFeedbackReceived(
 
     rumbleBuffer.put(rumble);
     rumbleCondition.notify_one();
+}
+
+void Controller::streamSamplesRead(const Bytes &samples)
+{
+    sendAudioSamples(audioId, samples);
+
+    std::this_thread::sleep_for(AUDIO_PACKET_DELAY);
 }
