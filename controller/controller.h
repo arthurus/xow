@@ -21,7 +21,6 @@
 #include "gip.h"
 #include "input.h"
 #include "../utils/buffer.h"
-#include "audio.h"
 
 #include <atomic>
 #include <thread>
@@ -43,7 +42,6 @@ private:
     void deviceAnnounced(uint8_t id, const AnnounceData *announce) override;
     void statusReceived(uint8_t id, const StatusData *status) override;
     void guideButtonPressed(const GuideButtonData *button) override;
-    void audioConfigured(uint8_t id, const AudioConfigData *config) override;
     void serialNumberReceived(const SerialData *serial) override;
     void inputReceived(const InputData *input) override;
 
@@ -60,7 +58,11 @@ private:
         ff_effect effect,
         uint8_t replayCount
     );
-    void streamSamplesRead(const Bytes &samples);
+
+    void audioConfigured(uint8_t id, const AudioConfigData *config) override;
+    void processAudio();
+    void startAudio();
+    void stopAudio();
 
     InputDevice inputDevice;
     std::atomic<bool> stopRumbleThread;
@@ -71,6 +73,7 @@ private:
 
     uint8_t batteryLevel = 0xff;
 
-    AudioStream audioStream;
     uint8_t audioId = 0;
+    std::atomic<bool> stopAudioThread;
+    std::thread *audioThread = nullptr;
 };

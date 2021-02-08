@@ -17,10 +17,13 @@
  */
 
 #include "controller.h"
+#include "audio.h"
 #include "../utils/log.h"
+#include "../utils/bytes.h"
 
 #include <cstdlib>
 #include <cmath>
+#include <chrono>
 #include <linux/input.h>
 
 // Configuration for the compatibility mode
@@ -41,7 +44,7 @@
 #define RUMBLE_MAX_POWER 100
 #define RUMBLE_DELAY std::chrono::milliseconds(10)
 
-#define AUDIO_PACKET_DELAY std::chrono::milliseconds(7)
+#define AUDIO_LATENCY std::chrono::milliseconds(20)
 
 Controller::Controller(
     SendPacket sendPacket
@@ -54,13 +57,12 @@ Controller::Controller(
         std::placeholders::_3
     )),
     stopRumbleThread(false),
-    audioStream(std::bind(
-        &Controller::streamSamplesRead,
-        this,
-        std::placeholders::_1)) {}
+    stopAudioThread(false) {}
 
 Controller::~Controller()
 {
+    stopAudio();
+
     stopRumbleThread = true;
     rumbleCondition.notify_one();
 
@@ -113,9 +115,8 @@ void Controller::statusReceived(uint8_t id, const StatusData *status)
     if (id != DEVICE_ID_CONTROLLER)
     {
         Log::info("Accessory removed");
-        Log::info("Stopping audio");
 
-        audioStream.stop();
+        stopAudio();
 
         if (!setPowerMode(id, POWER_SLEEP))
         {
@@ -156,12 +157,43 @@ void Controller::audioConfigured(uint8_t id, const AudioConfigData *config)
     }
 
     // Don't wait for the second "audio enabled" event
-    audioStream.start(
+    startAudio();
+}
+
+void Controller::processAudio()
+{
+    AudioStream audioStream(
         DEVICE_NAME,
         GIP_AUDIO_OUT_RATE,
         GIP_AUDIO_OUT_CHANNELS,
-        GIP_AUDIO_OUT_COUNT
+        AUDIO_LATENCY
     );
+    auto& audioBuffer = audioStream.getBuffer();
+    Bytes samples(GIP_AUDIO_OUT_COUNT);
+
+    while (!stopAudioThread)
+    {
+        audioBuffer.read(samples.raw(), GIP_AUDIO_OUT_COUNT);
+        sendAudioSamples(audioId, samples);
+    }
+}
+
+void Controller::startAudio()
+{
+    stopAudioThread = false;
+    audioThread = new std::thread(&Controller::processAudio, this);
+}
+
+void Controller::stopAudio()
+{
+    if (audioThread != nullptr)
+    {
+        Log::info("Stopping audio");
+        stopAudioThread = true;
+        audioThread->join();
+        delete audioThread;
+        audioThread = nullptr;
+    }
 }
 
 void Controller::serialNumberReceived(const SerialData *serial)
@@ -434,11 +466,4 @@ void Controller::inputFeedbackReceived(
 
     rumbleBuffer.put(rumble);
     rumbleCondition.notify_one();
-}
-
-void Controller::streamSamplesRead(const Bytes &samples)
-{
-    sendAudioSamples(audioId, samples);
-
-    std::this_thread::sleep_for(AUDIO_PACKET_DELAY);
 }

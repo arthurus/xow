@@ -23,9 +23,13 @@
 #include <atomic>
 #include <string>
 #include <stdexcept>
+#include <thread>
+#include <future>
+#include <chrono>
+#include <pulse/pulseaudio.h>
+#include "../utils/CircularBuffer.h"
 
 class Bytes;
-struct pa_simple;
 
 /*
  * Bidirectional audio stream
@@ -34,33 +38,26 @@ struct pa_simple;
 class AudioStream
 {
 public:
-    using SamplesRead = std::function<void(const Bytes &samples)>;
-
-    AudioStream(SamplesRead samplesRead);
-    virtual ~AudioStream();
-
-    void start(
+    AudioStream(
         std::string name,
         uint32_t sampleRate,
         uint8_t channels,
-        size_t sampleCount
+        std::chrono::milliseconds latency
     );
-    void stop();
+    virtual ~AudioStream();
+
+    CircularBuffer<uint8_t>& getBuffer();
 
 private:
-    enum State
-    {
-        STATE_STOPPED,
-        STATE_RUNNING,
-        STATE_STOPPING,
-    };
+    void mainLoop(std::promise<bool> ready);
 
-    void read(size_t sampleCount);
-
-    pa_simple *pa_conn;
-    std::atomic<State> state;
-
-    SamplesRead samplesRead;
+    std::string name;
+    pa_sample_spec ss;
+    uint32_t latencyUs;
+    std::thread thread;
+    std::atomic<bool> threadQuit;
+    pa_mainloop *paMainloop;
+    CircularBuffer<uint8_t> buf;
 };
 
 class AudioException : public std::runtime_error
