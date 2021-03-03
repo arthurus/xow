@@ -22,12 +22,6 @@
 
 #include <cstring>
 
-// From the users' perspective
-#define STREAM_NAME_OUT "output"
-#define SINK_NAME "XboxOutput"
-#define SINK_MODULE_NAME "module-null-sink"
-#define SINK_MODULE_ARGS "sink_name=" SINK_NAME " sink_properties=device.description=Xbox_controller_sink"
-
 AudioStream::AudioStream(
     std::string name,
     uint32_t sampleRate,
@@ -116,66 +110,18 @@ static void stream_read_cb(pa_stream *stream, size_t length, void *userdata)
     }
 }
 
-static void get_module_info_cb(pa_context *ctx, const pa_module_info *i, int is_last, void *userdata)
-{
-    int *module_idx = (int *)userdata;
-
-    if (is_last)
-    {
-        if (*module_idx == -2)
-            *module_idx = -1;
-        return;
-    }
-
-    if (strcmp(i->name, SINK_MODULE_NAME) == 0 &&
-        strcmp(i->argument, SINK_MODULE_ARGS) == 0)
-            *module_idx = i->index;
-}
-
-static void load_module_cb(pa_context *ctx, uint32_t idx, void *userdata)
-{
-    int *module_idx = (int *)userdata;
-
-    *module_idx = idx;
-}
-
-static void get_sink_input_info_list_cb(pa_context *ctx, const pa_sink_input_info *i, int eol, void *userdata)
-{
-    int *sink_idx = (int *)userdata;
-
-    if (eol)
-    {
-        *sink_idx = -1;
-        return;
-    }
-
-    if (i->sink != (uint32_t)*sink_idx)
-    {
-        Log::debug("Moving stream #%d '%s'", i->index, i->name);
-        auto op = pa_context_move_sink_input_by_name(ctx, i->index, SINK_NAME, nullptr, nullptr);
-        pa_operation_unref(op);
-    }
-}
-
 static void get_sink_info_cb(pa_context *ctx, const pa_sink_info *i, int eol, void *userdata)
 {
-    int *sink_idx = (int *)userdata;
+    auto out = (const char **)userdata;
 
     if (eol)
     {
-        if (*sink_idx == -2)
-            *sink_idx = -1;
+        if (*out == nullptr)
+            *out = (const char *)1;
         return;
     }
 
-    *sink_idx = i->index;
-}
-
-static void context_status_cb(pa_context *ctx, int success, void *userdata)
-{
-    int *status = (int *)userdata;
-
-    *status = success ? 1 : -1;
+    *out = strdup(i->monitor_source_name);
 }
 
 void AudioStream::mainLoop(std::promise<bool> ready)
@@ -183,9 +129,6 @@ void AudioStream::mainLoop(std::promise<bool> ready)
     pa_mainloop_api *api = pa_mainloop_get_api(paMainloop);
     pa_context *ctx = pa_context_new(api, name.c_str());
     pa_stream *stream = nullptr;
-    int module_idx = -2;
-    int sink_idx = -2;
-    int status;
 
     try
     {
@@ -193,7 +136,7 @@ void AudioStream::mainLoop(std::promise<bool> ready)
         if (ret < 0)
             throw AudioException("Failed to connect context", ret);
 
-        status = 0;
+        int status = 0;
         pa_context_set_state_callback(ctx, pa_state_cb, &status);
         while (status == 0)
             pa_mainloop_iterate(paMainloop, 1, nullptr);
@@ -201,47 +144,18 @@ void AudioStream::mainLoop(std::promise<bool> ready)
         if (status == 2)
             throw AudioException("Failed to connect context");
 
-        auto op = pa_context_get_module_info_list(ctx, get_module_info_cb, &module_idx);
-        while (module_idx == -2)
+        const char *default_sink_monitor_name = nullptr;
+        auto op = pa_context_get_sink_info_by_name(ctx, "@DEFAULT_SINK@", get_sink_info_cb, &default_sink_monitor_name);
+        while (default_sink_monitor_name == nullptr)
             pa_mainloop_iterate(paMainloop, 1, nullptr);
         pa_operation_unref(op);
 
-        if (module_idx == -1)
-        {
-            module_idx = -2;
-            op = pa_context_load_module(ctx, SINK_MODULE_NAME, SINK_MODULE_ARGS, load_module_cb, &module_idx);
-            while (module_idx == -2)
-                pa_mainloop_iterate(paMainloop, 1, nullptr);
-            pa_operation_unref(op);
+        if (default_sink_monitor_name == (void *)1)
+            throw AudioException("Failed to get default sink monitor");
 
-            if (module_idx == -1)
-                throw AudioException("Failed to load module");
-        }
+        Log::debug("Capturing from %s", default_sink_monitor_name);
 
-        op = pa_context_get_sink_info_by_name(ctx, SINK_NAME, get_sink_info_cb, &sink_idx);
-        while (sink_idx == -2)
-            pa_mainloop_iterate(paMainloop, 1, nullptr);
-        pa_operation_unref(op);
-
-        if (sink_idx == -1)
-            throw AudioException("Failed to get sink index");
-
-        status = 0;
-        op = pa_context_set_default_sink(ctx, SINK_NAME, context_status_cb, &status);
-        while (status == 0)
-            pa_mainloop_iterate(paMainloop, 1, nullptr);
-        pa_operation_unref(op);
-
-        if (status != 1)
-            throw AudioException("Failed to set default sink");
-
-        status = sink_idx;
-        op = pa_context_get_sink_input_info_list(ctx, get_sink_input_info_list_cb, &status);
-        while (status == sink_idx)
-            pa_mainloop_iterate(paMainloop, 1, nullptr);
-        pa_operation_unref(op);
-
-        stream = pa_stream_new(ctx, STREAM_NAME_OUT, &ss, nullptr);
+        stream = pa_stream_new(ctx, "Xbox controller output", &ss, nullptr);
         if (!stream)
             throw AudioException("Failed to create stream");
 
@@ -252,7 +166,7 @@ void AudioStream::mainLoop(std::promise<bool> ready)
         pa_buffer_attr bufattr = {(uint32_t)-1};
         bufattr.fragsize = pa_usec_to_bytes(latencyUs, &ss);
 
-        ret = pa_stream_connect_record(stream, SINK_NAME".monitor", &bufattr, PA_STREAM_ADJUST_LATENCY);
+        ret = pa_stream_connect_record(stream, default_sink_monitor_name, &bufattr, PA_STREAM_ADJUST_LATENCY);
         if (ret < 0)
             throw AudioException("Failed to connect stream", ret);
 
@@ -261,6 +175,8 @@ void AudioStream::mainLoop(std::promise<bool> ready)
 
         if (stream_state == 2)
             throw AudioException("Failed to connect stream");
+
+        free((void *)default_sink_monitor_name);
     }
     catch (...)
     {
@@ -273,13 +189,8 @@ void AudioStream::mainLoop(std::promise<bool> ready)
     while (threadQuit == false)
         pa_mainloop_iterate(paMainloop, 1, nullptr);
 
-    status = 0;
-    pa_operation_unref(pa_context_unload_module(ctx, module_idx, context_status_cb, &status));
-    while (status == 0)
-        pa_mainloop_iterate(paMainloop, 1, nullptr);
-
-    if (status != 1)
-        throw AudioException("Failed to unload module");
+    pa_stream_disconnect(stream);
+    pa_context_disconnect(ctx);
 
     Log::info("Audio stopped");
 out:
